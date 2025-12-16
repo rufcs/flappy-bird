@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flappy Gem (Compact)</title>
+    <!-- Include Tone.js for simple synthesized audio feedback -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <style>
+        /* Import Google Font for a fun, game-like look */
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #0b1a26; /* Dark background */
+            font-family: 'Press Start 2P', cursive;
+            color: white;
+            padding: 5px; /* Reduced padding */
+            box-sizing: border-box;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+        }
+
+        .game-container {
+            /* Reduced max size for compact view */
+            max-width: 240px; 
+            width: 95%; 
+            border: 5px solid #3498db; /* Reduced border size */
+            border-radius: 15px; /* Reduced border radius */
+            box-shadow: 0 0 15px rgba(52, 152, 219, 0.5), 0 5px 10px rgba(0, 0, 0, 0.3); /* Reduced shadow */
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        canvas {
+            display: block;
+            background-color: #7dd3fc; /* Light blue sky */
+            touch-action: manipulation; 
+        }
+
+        .controls {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            padding: 8px 0; /* Reduced padding */
+            background-color: #2c3e50;
+            border-top: 3px solid #3498db;
+        }
+
+        button {
+            padding: 8px 12px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 10px; /* Reduced font size */
+            background-color: #2ecc71; 
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            box-shadow: 0 4px 0 #27ae60;
+            outline: none;
+            margin: 0 3px;
+        }
+
+        button:active {
+            box-shadow: 0 1px 0 #27ae60;
+            transform: translateY(3px);
+        }
+
+        p {
+            font-size: 8px !important; /* Smaller help text */
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Flappy Gem</h1>
+
+    <div class="game-container">
+        <!-- Canvas size 240x400 -->
+        <canvas id="gameCanvas" width="240" height="400"></canvas> 
+
+        <div class="controls">
+            <button id="startButton">START / RESTART</button>
+        </div>
+    </div>
+
+    <p style="margin-top: 10px; text-align: center;">Tap/Click or press SPACE to jump!</p>
+
+    <script>
+        // --- Game Setup and Constants ---
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startButton = document.getElementById('startButton');
+
+        // Scaled Game constants
+        const GRAVITY = 0.18; 
+        const FLAP_STRENGTH = -5;
+        const PIPE_SPEED = 2;
+        const PIPE_WIDTH = 35;
+        const PIPE_GAP = 90; 
+        const PIPE_SPACING = 200; 
+        const groundHeight = 30; 
+        const MAX_ROTATION = Math.PI / 4; // Max 45 degrees tilt
+
+        // Cloud array for aesthetic background
+        const clouds = [
+            { x: 30, y: 30, radius: 15, speed: 0.5 },
+            { x: 150, y: 80, radius: 12, speed: 0.3 },
+            { x: 200, y: 20, radius: 18, speed: 0.7 },
+        ];
+
+
+        // Game state variables
+        let gameLoopId;
+        let isGameOver = true;
+        let score = 0;
+        let bird;
+        let pipes = [];
+        let pipeTimer = 0;
+        let screenFlashTimer = 0;
+        
+        // Audio Setup (using Tone.js)
+        let flapper;
+        try {
+            // Setup simple synthetic sound for the flap
+            flapper = new Tone.MembraneSynth({
+                pitchDecay: 0.008,
+                octaves: 1,
+                oscillator: { type: "square" }
+            }).toDestination();
+            Tone.context.lookAhead = 0.01; // Reduce latency
+        } catch (e) {
+            console.error("Tone.js failed to initialize:", e);
+        }
+
+        // --- Bird Object ---
+        class Bird {
+            constructor() {
+                this.x = canvas.width / 4;
+                this.y = canvas.height / 2;
+                this.radius = 10; 
+                this.velocity = 0;
+                this.rotation = 0; // New: rotation angle
+                this.color = '#f1c40f'; 
+            }
+
+            draw() {
+                ctx.save();
+                
+                // Translate context to the bird's center, rotate, then translate back
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation);
+
+                // Main body
+                ctx.beginPath();
+                ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.strokeStyle = '#e67e22'; 
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Simple Beak (Triangle) - drawn relative to (0,0) center
+                ctx.fillStyle = '#e74c3c';
+                ctx.beginPath();
+                ctx.moveTo(this.radius * 0.8, 0);
+                ctx.lineTo(this.radius * 1.5, -3);
+                ctx.lineTo(this.radius * 1.5, 3);
+                ctx.closePath();
+                ctx.fill();
+
+                // Draw simple eye - drawn relative to (0,0) center
+                ctx.fillStyle = 'black';
+                ctx.beginPath();
+                ctx.arc(this.radius / 3, -this.radius / 3, 1.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore(); // Restore context state (removes translation and rotation)
+            }
+
+            update() {
+                this.velocity += GRAVITY;
+                this.y += this.velocity;
+                
+                // Rotation logic: tilt based on velocity
+                // Clamp velocity to prevent excessive rotation
+                const tiltVelocity = Math.min(Math.max(this.velocity, -5), 8); 
+                // Map clamped velocity to rotation angle (faster down = more tilt)
+                this.rotation = Math.min(MAX_ROTATION, tiltVelocity * 0.05);
+            }
+
+            flap() {
+                if (isGameOver) return;
+                
+                this.velocity = FLAP_STRENGTH;
+                
+                // Play sound
+                if (flapper) {
+                    try {
+                        // Activate Tone.js context if needed (required for mobile compatibility)
+                        if (Tone.context.state !== 'running') {
+                            Tone.context.resume();
+                        }
+                        flapper.triggerAttackRelease("C5", "16n");
+                    } catch (e) {
+                        console.warn("Audio playback failed.", e);
+                    }
+                }
+            }
+        }
+
+        // --- Pipe Object (unchanged) ---
+        class Pipe {
+            constructor(x) {
+                this.x = x;
+                this.width = PIPE_WIDTH;
+                this.topHeight = Math.random() * (canvas.height * 0.5) + (canvas.height * 0.1);
+                this.bottomY = this.topHeight + PIPE_GAP;
+                this.scored = false;
+                this.color = '#27ae60'; 
+            }
+
+            draw() {
+                // Top Pipe Body
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, 0, this.width, this.topHeight);
+                // Bottom Pipe Body
+                ctx.fillRect(this.x, this.bottomY, this.width, canvas.height - this.bottomY);
+                
+                // Add pipe cap (Lighter Green)
+                ctx.fillStyle = '#2ecc71'; 
+                ctx.fillRect(this.x - 3, this.topHeight - 15, this.width + 6, 15); 
+                ctx.fillRect(this.x - 3, this.bottomY, this.width + 6, 15);
+                
+                // Add dark outline for depth
+                ctx.strokeStyle = '#1e8449';
+                ctx.lineWidth = 3; 
+                ctx.strokeRect(this.x, 0, this.width, this.topHeight);
+                ctx.strokeRect(this.x, this.bottomY, this.width, canvas.height - this.bottomY);
+                ctx.strokeRect(this.x - 3, this.topHeight - 15, this.width + 6, 15);
+                ctx.strokeRect(this.x - 3, this.bottomY, this.width + 6, 15);
+            }
+
+            update() {
+                this.x -= PIPE_SPEED;
+            }
+
+            collidesWith(bird) {
+                const topPipeCollision = (
+                    bird.x + bird.radius > this.x && 
+                    bird.x - bird.radius < this.x + this.width && 
+                    bird.y - bird.radius < this.topHeight
+                );
+
+                const bottomPipeCollision = (
+                    bird.x + bird.radius > this.x && 
+                    bird.x - bird.radius < this.x + this.width && 
+                    bird.y + bird.radius > this.bottomY 
+                );
+
+                return topPipeCollision || bottomPipeCollision;
+            }
+        }
+        
+        // --- Aesthetic Functions ---
+
+        function drawCloud(x, y, radius) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            ctx.arc(x + radius * 0.8, y, radius * 0.8, 0, Math.PI * 2);
+            ctx.arc(x - radius * 0.7, y + radius * 0.3, radius * 0.7, 0, Math.PI * 2);
+            ctx.arc(x + radius * 0.4, y - radius * 0.5, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawClouds() {
+            for (const cloud of clouds) {
+                drawCloud(cloud.x, cloud.y, cloud.radius);
+                cloud.x -= cloud.speed * 0.5;
+                if (cloud.x + cloud.radius * 2 < 0) {
+                    cloud.x = canvas.width + cloud.radius * 2;
+                    cloud.y = Math.random() * (canvas.height / 3);
+                }
+            }
+        }
+        
+        function drawGround() {
+            const groundY = canvas.height - groundHeight;
+
+            // 1. Draw dirt/soil
+            ctx.fillStyle = '#834c20'; 
+            ctx.fillRect(0, groundY, canvas.width, groundHeight);
+
+            // 2. Draw grass layer
+            ctx.fillStyle = '#27ae60';
+            ctx.fillRect(0, groundY, canvas.width, 6); 
+            
+            // 3. Add small grass bumps for detail
+            ctx.fillStyle = '#1e8449';
+            for (let i = 0; i < canvas.width; i += 7) {
+                ctx.beginPath();
+                ctx.moveTo(i, groundY);
+                ctx.lineTo(i + 3, groundY - 3);
+                ctx.lineTo(i + 6, groundY);
+                ctx.fill();
+            }
+        }
+
+
+        // --- Game Logic Functions ---
+
+        function drawScore() {
+            ctx.fillStyle = 'white';
+            ctx.font = '14px "Press Start 2P"'; 
+            ctx.textAlign = 'left';
+            ctx.shadowColor = 'black';
+            ctx.shadowBlur = 3;
+            ctx.fillText('SCORE: ' + score, 5, 20); 
+            ctx.shadowBlur = 0; 
+        }
+
+        function checkBoundaryCollision(bird) {
+            // Check bottom boundary (ground)
+            if (bird.y + bird.radius >= canvas.height - groundHeight) { 
+                bird.y = canvas.height - groundHeight - bird.radius; 
+                return true;
+            }
+            // Check top boundary
+            if (bird.y - bird.radius < 0) {
+                bird.y = bird.radius;
+                bird.velocity = 0;
+            }
+            return false;
+        }
+
+        function handlePipeGeneration() {
+            pipeTimer++;
+            if (pipeTimer > PIPE_SPACING) {
+                pipes.push(new Pipe(canvas.width));
+                pipeTimer = 0;
+            }
+
+            pipes = pipes.filter(pipe => pipe.x + pipe.width > 0);
+        }
+
+        function handleGameStatus() {
+            if (checkBoundaryCollision(bird)) {
+                isGameOver = true;
+                // Add a simple crash sound
+                if (flapper) flapper.triggerAttackRelease("C2", "0.2");
+                return;
+            }
+
+            for (const pipe of pipes) {
+                if (pipe.collidesWith(bird)) {
+                    isGameOver = true;
+                    if (flapper) flapper.triggerAttackRelease("C2", "0.2");
+                    return;
+                }
+                
+                // Score check and score flash trigger
+                if (pipe.x + pipe.width < bird.x - bird.radius && !pipe.scored) {
+                    score++;
+                    pipe.scored = true;
+                    screenFlashTimer = 3; // Trigger a brief flash
+                }
+            }
+        }
+        
+        function handleScreenFlash() {
+            if (screenFlashTimer > 0) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                screenFlashTimer--;
+            }
+        }
+
+        function drawGameOver() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = '#e74c3c';
+            ctx.font = '16px "Press Start 2P"'; 
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER!', canvas.width / 2, canvas.height / 2 - 30);
+
+            ctx.fillStyle = 'white';
+            ctx.font = '10px "Press Start 2P"';
+            ctx.fillText('Final Score: ' + score, canvas.width / 2, canvas.height / 2);
+        }
+
+        // --- Main Game Loop ---
+
+        function update() {
+            if (isGameOver) {
+                drawGameOver();
+                return;
+            }
+
+            ctx.fillStyle = '#7dd3fc'; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            drawClouds();
+
+            handlePipeGeneration();
+            for (const pipe of pipes) {
+                pipe.update();
+                pipe.draw();
+            }
+
+            drawGround();
+            
+            bird.update();
+            bird.draw();
+
+            handleGameStatus();
+            drawScore();
+            handleScreenFlash(); // Draw flash last to overlay everything
+
+            gameLoopId = requestAnimationFrame(update);
+        }
+
+        function startGame() {
+            cancelAnimationFrame(gameLoopId);
+            isGameOver = false;
+            score = 0;
+            pipes = [];
+            pipeTimer = PIPE_SPACING; 
+            bird = new Bird();
+            screenFlashTimer = 0;
+
+            update();
+        }
+
+        function drawInitialMessage() {
+             ctx.fillStyle = '#7dd3fc'; 
+             ctx.fillRect(0, 0, canvas.width, canvas.height);
+             drawGround();
+             bird.draw();
+             drawScore();
+
+             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+             ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+             ctx.fillStyle = '#f1c40f';
+             ctx.font = '14px "Press Start 2P"';
+             ctx.textAlign = 'center';
+             ctx.fillText('FLAPPY GEM', canvas.width / 2, canvas.height / 2 - 40);
+
+             ctx.fillStyle = 'white';
+             ctx.font = '8px "Press Start 2P"';
+             ctx.fillText('Press START or tap screen', canvas.width / 2, canvas.height / 2 + 10);
+             ctx.fillText('to begin!', canvas.width / 2, canvas.height / 2 + 30);
+        }
+
+
+        // --- Event Listeners and Initialization ---
+
+        function handleFlapInput(event) {
+            if (isGameOver) {
+                return;
+            }
+            if (event.target === canvas || event.code === 'Space') {
+                // Tone.js requires a user interaction to start audio context
+                if (Tone.context.state !== 'running' && flapper) {
+                    Tone.start();
+                }
+                bird.flap();
+            }
+        }
+
+        canvas.addEventListener('click', handleFlapInput);
+
+        document.addEventListener('keydown', (event) => {
+            if (event.code === 'Space') {
+                event.preventDefault(); 
+                handleFlapInput(event);
+            }
+        });
+
+        startButton.addEventListener('click', () => {
+            if (Tone.context.state !== 'running' && flapper) {
+                Tone.start();
+            }
+            if (isGameOver) {
+                startGame();
+            } else {
+                bird.flap();
+            }
+        });
+
+
+        window.onload = function() {
+            bird = new Bird();
+            drawInitialMessage();
+        };
+
+    </script>
+</body>
+</html>
